@@ -202,16 +202,26 @@ const StadiumDetail: React.FC = () => {
                 </div>
               </div>
 
-              {/* Map Placeholder */}
+              {/* Mini-mapa (OpenStreetMap embed) */}
               <div className="rounded-2xl bg-card border border-border p-6">
                 <h3 className="font-display text-lg mb-4">Localização</h3>
-                <div className="aspect-square rounded-xl bg-secondary/50 flex items-center justify-center">
-                  <div className="text-center">
-                    <MapPin className="w-8 h-8 text-primary mx-auto mb-2" />
-                    <span className="text-sm text-muted-foreground">
-                      {stadium.coordinates.lat.toFixed(4)}, {stadium.coordinates.lng.toFixed(4)}
-                    </span>
-                  </div>
+                <div className="aspect-square rounded-xl overflow-hidden border border-border/50 relative">
+                  <iframe
+                    title={`Mapa de ${stadium.name}`}
+                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${
+                      stadium.coordinates.lng - 0.012
+                    }%2C${stadium.coordinates.lat - 0.008}%2C${
+                      stadium.coordinates.lng + 0.012
+                    }%2C${stadium.coordinates.lat + 0.008}&layer=mapnik&marker=${
+                      stadium.coordinates.lat
+                    }%2C${stadium.coordinates.lng}`}
+                    className="w-full h-full border-0"
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                </div>
+                <div className="mt-3 text-xs text-muted-foreground text-center font-mono">
+                  {stadium.coordinates.lat.toFixed(4)}, {stadium.coordinates.lng.toFixed(4)}
                 </div>
                 <Button variant="outline" className="w-full mt-4" asChild>
                   <a
