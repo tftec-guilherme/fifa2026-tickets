@@ -5,8 +5,9 @@ name: Lab Quartas de Final — Identidade dois-mundos (Gateway YARP + CIAM + adm
 #
 # Disparo MANUAL apenas (Actions → "Lab Quartas de Final" → Run workflow).
 # O input `acao` controla O QUE roda:
-#   - tudo       → migrations → gateway → frontend (NESTA ORDEM)
+#   - tudo       → migrations → backend → gateway → frontend (NESTA ORDEM)
 #   - migrations → só as migrations do banco (phase-01, phase-03, phase-04-ciam-link)
+#   - backend    → só deploy do backend v1 (gatewayTrust.js + App Setting GATEWAY_SHARED_SECRET)
 #   - gateway    → só build/test/deploy do Gateway YARP (Container App)
 #   - frontend   → só build/deploy do frontend (com VITE_CIAM_*)
 #
@@ -19,8 +20,10 @@ name: Lab Quartas de Final — Identidade dois-mundos (Gateway YARP + CIAM + adm
 # é o passo HANDS-ON da aula — NÃO é executado por este workflow (de propósito).
 #
 # Pré-requisitos no fork (ver runbook das Quartas / docs/workshops/phase-03-quartas/):
-#   Secrets:  AZURE_CREDENTIALS, SQL_CONNECTION_STRING, AZURE_FRONTEND_PUBLISH_PROFILE
+#   Secrets:  AZURE_CREDENTIALS, SQL_CONNECTION_STRING, AZURE_FRONTEND_PUBLISH_PROFILE,
+#             AZURE_BACKEND_PUBLISH_PROFILE, GATEWAY_SHARED_SECRET
 #   Vars (migrations): SQL_SERVER, RESOURCE_GROUP
+#   Vars (backend):    BACKEND_APP_NAME, RESOURCE_GROUP
 #   Vars (gateway):    ACR_LOGIN_SERVER, PHASE04_CONTAINERAPP_NAME, PHASE04_RESOURCE_GROUP
 #   Vars (frontend):   FRONTEND_APP_NAME, VITE_CIAM_AUTHORITY, VITE_CIAM_CLIENT_ID,
 #                      GATEWAY_V2_URL, BACKEND_URL, FUNCTION_V2_URL,
@@ -37,6 +40,7 @@ on:
         options:
           - tudo
           - migrations
+          - backend
           - gateway
           - frontend
       sql_server:
@@ -50,6 +54,9 @@ on:
         required: false
       frontend_app_name:
         description: '(opcional) Azure Web App (frontend) name override'
+        required: false
+      backend_app_name:
+        description: '(opcional) Azure Web App (backend) name override'
         required: false
 
 env:
@@ -149,7 +156,81 @@ jobs:
           fi
 
       # =========================================================
-      # BLOCO 2 — GATEWAY YARP  (acao = tudo | gateway)
+      # BLOCO 2 — BACKEND v1  (acao = tudo | backend)
+      #   Deploy do backend Node/Express (inclui o middleware gatewayTrust.js do
+      #   "admin 100% workforce") + seta a App Setting GATEWAY_SHARED_SECRET (handshake
+      #   X-Gateway-Key com o gateway). O backend é PRIVADO (publicNetworkAccess=Disabled):
+      #   abrimos acesso temporário p/ o runner deployar via SCM e revertemos no fim,
+      #   espelhando o padrão abrir/reverter do bloco migrations.
+      #   Pré-req: SCM Basic Auth ON no Web App do backend (igual ao frontend).
+      # =========================================================
+      - name: '[backend] Azure login (Service Principal)'
+        if: ${{ inputs.acao == 'tudo' || inputs.acao == 'backend' }}
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: '[backend] Setup Node.js'
+        if: ${{ inputs.acao == 'tudo' || inputs.acao == 'backend' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: fifa2026-api/package-lock.json
+
+      - name: '[backend] Install prod deps + cleanup'
+        if: ${{ inputs.acao == 'tudo' || inputs.acao == 'backend' }}
+        working-directory: fifa2026-api
+        run: |
+          set -euo pipefail
+          npm ci --omit=dev
+          rm -rf logs src/logs
+          rm -f .env
+
+      - name: '[backend] Resolver parâmetros + abrir acesso temporário'
+        if: ${{ inputs.acao == 'tudo' || inputs.acao == 'backend' }}
+        run: |
+          set -euo pipefail
+          BACKEND_APP="${{ inputs.backend_app_name || vars.BACKEND_APP_NAME }}"
+          RG_BACK="${{ inputs.resource_group || vars.RESOURCE_GROUP || env.DEFAULT_RESOURCE_GROUP }}"
+          if [ -z "$BACKEND_APP" ]; then echo "::error::BACKEND_APP_NAME não definido (Variable)."; exit 1; fi
+          {
+            echo "BACKEND_APP=$BACKEND_APP"
+            echo "RG_BACK=$RG_BACK"
+          } >> "$GITHUB_ENV"
+          az webapp update -g "$RG_BACK" -n "$BACKEND_APP" --set publicNetworkAccess=Enabled -o none
+          echo "Backend $BACKEND_APP: acesso público temporário aberto para deploy."
+          sleep 10
+
+      - name: '[backend] Set GATEWAY_SHARED_SECRET (admin workforce)'
+        if: ${{ inputs.acao == 'tudo' || inputs.acao == 'backend' }}
+        run: |
+          set -euo pipefail
+          az webapp config appsettings set -g "$RG_BACK" -n "$BACKEND_APP" \
+            --settings GATEWAY_SHARED_SECRET="${{ secrets.GATEWAY_SHARED_SECRET }}" -o none
+          echo "GATEWAY_SHARED_SECRET aplicado no backend (handshake com o gateway)."
+
+      - name: '[backend] Deploy to Azure Web App'
+        if: ${{ inputs.acao == 'tudo' || inputs.acao == 'backend' }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.BACKEND_APP }}
+          publish-profile: ${{ secrets.AZURE_BACKEND_PUBLISH_PROFILE }}
+          package: fifa2026-api
+
+      - name: '[backend] Reverter acesso (sempre, mesmo em falha)'
+        if: ${{ always() && (inputs.acao == 'tudo' || inputs.acao == 'backend') }}
+        run: |
+          set +e
+          if [ -n "${BACKEND_APP:-}" ] && [ -n "${RG_BACK:-}" ]; then
+            az webapp update -g "$RG_BACK" -n "$BACKEND_APP" --set publicNetworkAccess=Disabled -o none
+            echo "Backend: Public Network Access = Disabled (revertido)."
+          else
+            echo "Contexto incompleto — nada a reverter."
+          fi
+
+      # =========================================================
+      # BLOCO 3 — GATEWAY YARP  (acao = tudo | gateway)
       #   build/test do Gateway (+Tests) + build/push imagem + deploy Container App.
       #   Espelha deploy-phase-02.yml.
       # =========================================================
@@ -227,7 +308,7 @@ jobs:
           echo "Smoke test OK — 401 sem token + /health 200."
 
       # =========================================================
-      # BLOCO 3 — FRONTEND  (acao = tudo | frontend)
+      # BLOCO 4 — FRONTEND  (acao = tudo | frontend)
       #   build Vite com VITE_CIAM_* (authority CIAM) + deploy do Web App.
       # =========================================================
       - name: '[frontend] Setup Node.js'

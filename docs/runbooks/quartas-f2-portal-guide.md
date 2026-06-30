@@ -233,7 +233,7 @@ O gateway **só sobe com as 4 `Jwt__*` presentes**. No Container App: **Applicat
 | `FunctionAppF1Url` | `https://<seu-func>.azurewebsites.net` (sem ela `/purchase` dá 502) |
 | `Gateway__FrontendOrigin` | `https://<seu-frontend>.azurewebsites.net` (CORS restrito ao front) |
 | `BackendV1Url` | `https://<seu-backend>.azurewebsites.net` (rotas `/admin/*` → backend v1; **sem ela o admin dá 502**) |
-| `Gateway__AdminSharedSecret` | **segredo forte que VOCÊ gera** (ex.: `openssl rand -hex 24`) — injetado como header `X-Gateway-Key` p/ o backend confiar. **Use o MESMO valor no backend** (Fase 4.6) |
+| `Gateway__AdminSharedSecret` | **segredo forte que VOCÊ gera** (ex.: `openssl rand -hex 24`) — injetado como header `X-Gateway-Key`. Use o **MESMO valor** no Secret `GATEWAY_SHARED_SECRET` do fork (Fase 5), que o workflow aplica no backend ao rodar `acao=backend` |
 
 > 🔒 **Duplo underscore:** `Jwt:CiamTenantId` na config vira `Jwt__CiamTenantId` em env var (`:` não é válido). A connection string do SQL **NÃO** vai no gateway (fica na Function). Para só testar a infra antes de ter os GUIDs reais, dá pra usar 4 GUIDs **placeholder** (válidos em forma): o gateway sobe e o `401` sem token já funciona; o fluxo com token real só fecha com os 4 GUIDs reais.
 
@@ -259,16 +259,7 @@ O gateway **só sobe com as 4 `Jwt__*` presentes**. No Container App: **Applicat
 
 ✅ **Checkpoint:** ACR `cr<sufixo>` (Admin Enabled), Environment `cae-<sufixo>`, Container App `ca-gateway-<sufixo>` rodando (placeholder) com **ingress externo na porta 8080**, **Application Url** anotada (= `<gateway-fqdn>`), **ACR conectado** em Registries e as **8 App Settings** presentes (4 `Jwt__*` reais + `BackendV1Url` + `Gateway__AdminSharedSecret`).
 
-### 4.6 Backend confia no gateway (admin 100% workforce)
-
-A área admin é servida pelo **backend v1**, mas a autenticação é **workforce via gateway**: o gateway injeta o header `X-Gateway-Key` (= `Gateway__AdminSharedSecret`) e o backend só confia quando o valor bate. Configure o **mesmo segredo** no backend:
-
-1. Portal → o **Web App do backend** (`<seu-backend>`) → **Settings → Environment variables → `+ Add`**:
-   - **Name:** `GATEWAY_SHARED_SECRET` · **Value:** **o MESMO** valor de `Gateway__AdminSharedSecret` (Fase 4.5) → **Apply → Save** (reinicia o app).
-
-> 🔒 Sem isso, o backend cai no fluxo legado v1 e o admin workforce recebe **401/403** mesmo com token válido. O segredo nunca vai pro repositório nem pro frontend — vive só nessas **duas** App Settings (gateway + backend).
-
-✅ **Checkpoint:** `GATEWAY_SHARED_SECRET` no backend = `Gateway__AdminSharedSecret` no gateway (mesmo valor).
+> 🔒 **Handshake admin (gateway ↔ backend):** o gateway injeta `X-Gateway-Key` = `Gateway__AdminSharedSecret`; o backend confia quando bate com o `GATEWAY_SHARED_SECRET` dele. O **workflow** `acao=backend` (Fase 6) deploya o backend (com o `gatewayTrust.js`) e aplica esse `GATEWAY_SHARED_SECRET` a partir do Secret do fork — por isso o valor tem de ser o **mesmo** aqui (gateway) e no Secret (Fase 5). O segredo nunca vai pro código/repositório.
 
 ---
 
@@ -286,6 +277,7 @@ No **seu fork** → **Settings → Secrets and variables → Actions**. Os **nom
 | `PHASE04_CONTAINERAPP_NAME` | `ca-gateway-<sufixo>` | gateway |
 | `PHASE04_RESOURCE_GROUP` | `<seu-rg>` | gateway |
 | `FRONTEND_APP_NAME` | `<seu-frontend>` | frontend |
+| `BACKEND_APP_NAME` | `<seu-backend>` | backend |
 | `GATEWAY_V2_URL` | `https://<gateway-fqdn>` | frontend (→ `VITE_GATEWAY_V2_URL`) |
 | `BACKEND_URL` | `https://<seu-backend>.azurewebsites.net` | frontend |
 | `FUNCTION_V2_URL` | `https://<seu-func>.azurewebsites.net` | frontend (→ `VITE_FUNCTION_V2_URL`) |
@@ -302,9 +294,11 @@ No **seu fork** → **Settings → Secrets and variables → Actions**. Os **nom
 
 | Nome EXATO | Conteúdo | Usada em (ação) |
 |---|---|---|
-| `AZURE_CREDENTIALS` | JSON do Service Principal com acesso ao RG | migrations + gateway |
+| `AZURE_CREDENTIALS` | JSON do Service Principal com acesso ao RG | migrations + backend + gateway |
 | `SQL_CONNECTION_STRING` | connection string ADO.NET do `FIFA2026Tickets` | migrations |
 | `AZURE_FRONTEND_PUBLISH_PROFILE` | publish profile do `<seu-frontend>` | frontend |
+| `AZURE_BACKEND_PUBLISH_PROFILE` | publish profile do `<seu-backend>` | backend |
+| `GATEWAY_SHARED_SECRET` | **mesmo** valor do `Gateway__AdminSharedSecret` (Fase 4.5) — o workflow aplica no backend | backend |
 
 > **Montar a `SQL_CONNECTION_STRING` (Cloud Shell PowerShell):**
 > ```powershell
@@ -312,9 +306,9 @@ No **seu fork** → **Settings → Secrets and variables → Actions**. Os **nom
 > "Server=$server.database.windows.net,1433;Database=FIFA2026Tickets;User Id=adminsql;Password=$senha;Encrypt=true;TrustServerCertificate=true"
 > ```
 
-> 📌 **Sobras da F1 (Oitavas) — NÃO confunda:** existem no fork mas o workflow das Quartas **NÃO lê**. Deixe-as quietas. Variables inertes: `BACKEND_APP_NAME`, `FUNCTION_APP_NAME`. Secrets inertes: `AZURE_BACKEND_PUBLISH_PROFILE`, `FUNCTION_PUBLISH_PROFILE`.
+> 📌 **Sobras da F1 (Oitavas) — NÃO confunda:** `FUNCTION_APP_NAME` (Variable) e `FUNCTION_PUBLISH_PROFILE` (Secret) existem no fork mas o workflow das Quartas **NÃO lê** — deixe-as quietas. *(Atenção: `BACKEND_APP_NAME` e `AZURE_BACKEND_PUBLISH_PROFILE`, antes inertes, agora SÃO usadas pelo `acao=backend`.)*
 
-✅ **Checkpoint:** as 14 Variables (3 com default) e os 3 Secrets criados no fork, com os nomes EXATOS acima.
+✅ **Checkpoint:** as 15 Variables (3 com default) e os 5 Secrets criados no fork, com os nomes EXATOS acima.
 
 ---
 
@@ -335,8 +329,9 @@ A branch do lab no repositório do evento (org **TFTEC**) chama-se **`lab-quarta
 Sempre em **Actions → "Lab Quartas de Final" → Run workflow → branch `main`** (já com o workflow após o merge da 6.1), variando o `acao`:
 
 1. **`acao = migrations`** — aplica `phase-01`, `phase-03` e a nova **`phase-04-ciam-link.sql`** (cria `users.entra_oid` **vazia** + índice `UQ_users_entra_oid`). O workflow abre/reverte acesso temporário ao SQL privado (idempotente; pode repetir). O **preenchimento** da coluna é o hands-on da [Fase 9](#fase-9--migração-users-v1--ciam-sql--o-clímax) — de propósito **não** roda aqui.
-2. **`acao = gateway`** — `dotnet build/test`, **build & push** da imagem no ACR (`cr<sufixo>.azurecr.io/gateway:<sha>`), `az containerapp update --image` (troca o placeholder pela imagem real) + smoke. Re-rode só quando trocar o código.
-3. **`acao = frontend`** — antes, garanta **SCM Basic Auth `On`** no Web App do frontend e capture o `AZURE_FRONTEND_PUBLISH_PROFILE` **depois** disso. O job faz `npm ci` + `vite build` (com `VITE_CIAM_*` e `VITE_ADMIN_*`) + deploy.
+2. **`acao = backend`** — deploya o backend v1 (com o `gatewayTrust.js` do **admin 100% workforce**) e aplica o `GATEWAY_SHARED_SECRET` (do Secret do fork). Pré-req: **SCM Basic Auth `On`** no Web App do backend e o `AZURE_BACKEND_PUBLISH_PROFILE` capturado **depois** disso. O job **abre/reverte** o acesso público do backend (que é privado) durante o deploy.
+3. **`acao = gateway`** — `dotnet build/test`, **build & push** da imagem no ACR (`cr<sufixo>.azurecr.io/gateway:<sha>`), `az containerapp update --image` (troca o placeholder pela imagem real) + smoke. Re-rode só quando trocar o código.
+4. **`acao = frontend`** — antes, garanta **SCM Basic Auth `On`** no Web App do frontend e capture o `AZURE_FRONTEND_PUBLISH_PROFILE` **depois** disso. O job faz `npm ci` + `vite build` (com `VITE_CIAM_*` e `VITE_ADMIN_*`) + deploy.
 
 > 🖱️ **Disparo manual apenas:** o workflow só tem `workflow_dispatch` — nada roda até você clicar em **Run workflow** e escolher a ação.
 
@@ -375,7 +370,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "https://${FQDN}/purchase" \
 
 ## Fase 8 — Login do admin (workforce) + App Role
 
-Pré-condição: Fase 3 feita, os `Jwt__Admin*` + `BackendV1Url` + `Gateway__AdminSharedSecret` no gateway (Fase 4.5), o `GATEWAY_SHARED_SECRET` no backend (Fase 4.6) e `VITE_ADMIN_*` no fork (Fase 5).
+Pré-condição: Fase 3 feita, os `Jwt__Admin*` + `BackendV1Url` + `Gateway__AdminSharedSecret` no gateway (Fase 4.5), `VITE_ADMIN_*` + `GATEWAY_SHARED_SECRET` no fork (Fase 5), e o **backend já deployado com `acao=backend`** (Fase 6) — é ele que traz o `gatewayTrust.js` + o segredo pro backend confiar no gateway.
 
 1. Logue como admin (authority `https://login.microsoftonline.com/<AdminTenantId>`). Em [jwt.ms](https://jwt.ms): `iss = login.microsoftonline.com/.../v2.0` e `roles: ["Admin"]`.
 2. Teste a separação: um **cliente CIAM válido** numa rota admin recebe **403** (autenticado, sem a role) — **não** 401.
@@ -481,7 +476,7 @@ Adiantamento para o **último lab** (chatbot LLM). Como você cria a conta Googl
 | **502** em toda chamada | targetPort do ingress ≠ **8080** | ingress targetPort = **8080** (Fase 4.3) |
 | **502** só em `/purchase` | `FunctionAppF1Url` ausente/errada | apontar p/ `https://<seu-func>.azurewebsites.net` (Fase 4.5) |
 | **502** nas rotas `/admin/*` | `BackendV1Url` ausente no gateway | definir `BackendV1Url` no gateway (Fase 4.5) |
-| Admin **401/403** com token válido (`roles:["Admin"]`) | `GATEWAY_SHARED_SECRET` ausente/diferente no backend | igualar ao `Gateway__AdminSharedSecret` do gateway (Fase 4.6) |
+| Admin **401/403** com token válido (`roles:["Admin"]`) | `Gateway__AdminSharedSecret` (gateway) ≠ `GATEWAY_SHARED_SECRET` (backend), ou `acao=backend` não rodou | usar o MESMO valor nos dois (App Setting Fase 4.5 = Secret Fase 5) e rodar `acao=backend` (Fase 6) |
 | Container App `Failed`/CrashLoop | `Jwt__*` ausente/vazia/`"common"` (fail-closed) | 4 `Jwt__*` presentes; placeholder serve p/ subir e fazer o 401 |
 | `/purchase` dá **200** sem token | gateway não fail-closed (config errada) | revisar `AddJwtBearer`/`Jwt__*`; deveria ser **401** |
 | `/health` não responde no 1º hit | cold start (`min-replicas=0`) | aguardar ~20s e repetir |
